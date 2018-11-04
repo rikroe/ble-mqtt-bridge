@@ -6,6 +6,7 @@ import gc
 import json
 import argparse
 import datetime
+import logging
 from threading import Thread, Semaphore
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
@@ -13,6 +14,8 @@ from bluepy.btle import Scanner, DefaultDelegate, Peripheral
 
 with open('config/ble-mqtt-conf.json', 'r') as f:
     config = json.load(f)
+
+logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 MQTT_HOST = config.get("mqtt", {}).get("host", "localhost")
 MQTT_PORT = int(config.get("mqtt", {}).get("port", 1883))
@@ -41,7 +44,7 @@ class ScanDelegate(DefaultDelegate):
             # publish the RSSI
             client.publish('ble/{}/rssi'.format(dev.addr), dev.rssi)
             # just some info/debug print
-            print("dev {} rssi {}".format(dev.addr, dev.rssi))
+            logging.info("dev {} rssi {}".format(dev.addr, dev.rssi))
             # publish all values individually
             for d in dev.getScanData():
                 client.publish('ble/{}/advertisement/{:02x}'.format(dev.addr, d[0]), d[2])
@@ -50,6 +53,7 @@ class ScanDelegate(DefaultDelegate):
             client.publish('ble/{}/advertisement/json'.format(dev.addr), json.dumps(scan_map))
         except Exception as e:
             # report errors
+            logging.error('Error: {}'.format(str(e)))
             client.publish('ble/{}/error', str(e))
             sleep(1)
 
@@ -66,6 +70,7 @@ class NotificationDelegate(DefaultDelegate):
             client.publish('ble/{}/notification/{}'.format(self._addr, cHandle), data)
         except Exception as e:
             # report errors
+            logging.error('Error: {}'.format(str(e)))
             client.publish('ble/{}/error', str(e))
             sleep(1)
 
@@ -81,6 +86,7 @@ class ScannerThread(Thread):
                 scanner = Scanner().withDelegate(ScanDelegate())
                 scanner.scan(20)
             except Exception as e:
+                logging.error('Error: {}'.format(str(e)))
                 client.publish('ble/scanning/error', str(e))
                 sleep(10)
             finally:
@@ -105,16 +111,16 @@ class BLEConnection():
 
     def process_commands(self, command_list):
         try:
-            print("Connecting to {} ({})".format(self._name, self._mac))
+            logging.info("Connecting to {} ({})".format(self._name, self._mac))
             skey = '{}_semaphore'.format(self._mac)
             with ble_map_lock:
                 if skey not in ble_dev_map:
                     ble_dev_map[skey] = Semaphore()
             with ble_dev_map[skey]:
                 p = Peripheral(self._mac)
-                print("Connected to {} ({})".format(self._name, self._mac))
+                logging.info("Connected to {} ({})".format(self._name, self._mac))
                 for command in command_list:
-                    print("  Command {}".format(command))
+                    logging.info("  Command {}".format(command))
                     if 'action' in command:
                         action = command['action']
 
@@ -151,30 +157,31 @@ class BLEConnection():
                         try:
                             if  action == 'writeCharacteristic':
                                 if handle is not None:
-                                    print("    Write {} to {:02x}".format(value, handle))
+                                    logging.info("    Write {} to {:02x}".format(value, handle))
                                     p.writeCharacteristic(handle, value, True)
                                 elif uuid is not None:
                                     for c in p.getCharacteristics(uuid=uuid):
-                                        print("    Write {} to {}".format(value, uuid))
+                                        logging.info("    Write {} to {}".format(value, uuid))
                                         c.write(value, True)
                             elif action == 'readCharacteristic':
                                 if handle is not None:
                                     result = p.readCharacteristic(handle)
-                                    print("    Read {} from {} ({:02x})".format(str(result), characteristic, handle))
+                                    logging.info("    Read {} from {} ({:02x})".format(str(result), characteristic, handle))
                                     client.publish('ble/{}/data/{}'.format(self._name, characteristic), json.dumps([ int(x) for x in result ]), retain=True)
                                 elif uuid is not None:
                                     for c in p.getCharacteristics(uuid=uuid):
                                         result = c.read()
-                                        print("    Read {} from {} ({})".format(str(result), characteristic, uuid))
+                                        logging.info("    Read {} from {} ({})".format(str(result), characteristic, uuid))
                                         client.publish('ble/{}/data/{}'.format(self._name, characteristic), json.dumps([ int(x) for x in result ]), retain=True)
                         except Exception as e:
                             if not ignoreError:
                                 raise e
                 p.disconnect()
-                print("Disconnected from {} ({})".format(self._name, self._mac))
+                logging.info("Disconnected from {} ({})".format(self._name, self._mac))
         except Exception as e:
             # report errors
-            client.publish('ble/scan/error', str(e))
+            logging.error('Error: {}'.format(str(e)))
+            client.publish('ble/process_commands/error', str(e))
             sleep(1)
 
 bt_thread_pool = ThreadPoolExecutor(max_workers=2)
@@ -193,11 +200,11 @@ class CommandThread(Thread):
 
     # The callback for when the client receives a CONNACK response from the server.
     def on_connect(client, userdata, flags, rc):
-        print("Connected with result code "+str(rc))
+        logging.info("Connected with result code "+str(rc))
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
         (result, mid) = client.subscribe("ble/+/commands")
-        print("Subscribed {}/{} ".format(result, mid))
+        logging.info("Subscribed {}/{} ".format(result, mid))
 
     # The callback for when a PUBLISH message is received from the server.
     def on_message(client, userdata, msg):
@@ -205,18 +212,19 @@ class CommandThread(Thread):
 
     def process_message(client, userdata, msg):
         topic = msg.topic.split('/')
-        print(msg.topic+" "+str(msg.payload))
-        print("  using {}/{}/{} len={}".format(topic[0], topic[1], topic[2], len(topic)))
+        logging.info(msg.topic+" "+str(msg.payload))
+        logging.info("  using {}/{}/{} len={}".format(topic[0], topic[1], topic[2], len(topic)))
         if len(topic) == 3 and topic[0] == 'ble' and topic[1] == 'scan' and topic[2] == 'commands':
             print (topic)
             try:
                 with ble_map_lock:
                     for v in ble_dev_map.values():
                         v.acquire()
-                    print("    starting scan")
+                    logging.info("    starting scan")
                     scanner = Scanner().withDelegate(ScanDelegate())
                     scanner.scan(int(msg.payload))
             except Exception as e:
+                logging.error('Error: {}'.format(str(e)))
                 client.publish('ble/scanning/error', str(e))
                 sleep(12)
             finally:
@@ -224,7 +232,7 @@ class CommandThread(Thread):
                     for v in ble_dev_map.values():
                         v.release()
                 try:
-                    print("    stopping scan")
+                    logging.info("    stopping scan")
                     scanner.stop()
                 except:
                     pass
@@ -238,7 +246,7 @@ class CommandThread(Thread):
                     conn = BLEConnection(topic[1])
                     conn.process_commands(data['commands'])
                 except Exception as e:
-                    print('Error: {}'.format(str(e)))
+                    logging.error('Error: {}'.format(str(e)))
                     if 'tries' in data:
                         if data['tries'] > 1:
                             data['tries'] -= 1
@@ -248,7 +256,7 @@ class CommandThread(Thread):
                             client.publish(topic=msg.topic, payload=json.dumps(data), qos=msg.qos, retain=msg.retain)
                             return
             except Exception as e2:
-                print('Error: {}'.format(str(e2)))
+                logging.error('Error: {}'.format(str(e2)))
 
 # start the BLE scan and let it run continously
 
@@ -258,10 +266,12 @@ CommandThread()
 client.connect(MQTT_HOST, MQTT_PORT)
 client.loop_start()
 sleep(1)
+
 if SCAN_INITIAL:
     client.publish('ble/scan/commands', SCAN_TIMEOUT)
+
 #client.loop_forever()
 
 while True:
-    print("Waiting...")
+#    logging.info("Waiting...")
     sleep(1)
