@@ -109,7 +109,7 @@ class BLEConnection():
         self._name = self._deviceInfo.get('name', mac).lower() if self._deviceInfo is not None else mac.lower()
         self.connected = False
 
-    def process_commands(self, command_list):
+    def process_commands(self, command_list, argument_list):
         try:
             logging.info("Connecting to {} ({})".format(self._name, self._mac))
             skey = '{}_semaphore'.format(self._mac)
@@ -119,6 +119,12 @@ class BLEConnection():
             with ble_dev_map[skey]:
                 p = Peripheral(self._mac)
                 logging.info("Connected to {} ({})".format(self._name, self._mac))
+
+                results = {}
+                combinedResponseTopic = None
+                if 'combineResponsesToTopic' in argument_list:
+                    combinedResponseTopic = argument_list['combineResponsesToTopic']
+
                 for command in command_list:
                     logging.info("  Command {}".format(command))
                     if 'action' in command:
@@ -138,7 +144,7 @@ class BLEConnection():
                             return_topic = "{:02x}".format(handle) if handle is not None else uuid
                         else:
                             return_topic = name
-
+                        
                         if self._deviceInfo['characteristics'] is not None:
                             for dev_char in self._deviceInfo['characteristics']:
                                 if name is not None and name == dev_char.get('name', None):
@@ -173,17 +179,22 @@ class BLEConnection():
                                         c.write(value, True)
                             elif action == 'readCharacteristic':
                                 if handle is not None:
-                                    result = p.readCharacteristic(handle)
-                                    logging.info("    Read {} from {} ({:02x})".format(str(result), return_topic, handle))
-                                    client.publish('ble/{}/data/{}'.format(self._name, return_topic), json.dumps([ int(x) for x in result ]), retain=True)
+                                    results[return_topic] = [ int(x) for x in p.readCharacteristic(handle) ]
+                                    logging.info("    Read {} from {} ({:02x})".format(json.dumps(results[return_topic]), return_topic, handle))
                                 elif uuid is not None:
                                     for c in p.getCharacteristics(uuid=uuid):
-                                        result = c.read()
-                                        logging.info("    Read {} from {} ({})".format(str(result), return_topic, uuid))
-                                        client.publish('ble/{}/data/{}'.format(self._name, return_topic), json.dumps([ int(x) for x in result ]), retain=True)
+                                        results[return_topic] = [ int(x) for x in c.read() ]
+                                        logging.info("    Read {} from {} ({})".format(json.dumps(results[return_topic]), return_topic, uuid))
                         except Exception as e:
                             if not ignoreError:
                                 raise e
+
+                if combinedResponseTopic is not None:
+                    client.publish('ble/{}/data/{}'.format(self._name, combinedResponseTopic), json.dumps(results), retain=True)
+                else:
+                    for topic, result in results.items():
+                        client.publish('ble/{}/data/{}'.format(self._name, topic), json.dumps(result), retain=True)                                
+
                 p.disconnect()
                 logging.info("Disconnected from {} ({})".format(self._name, self._mac))
         except Exception as e:
@@ -252,7 +263,7 @@ class CommandThread(Thread):
                 data = json.loads(msg.payload.decode('utf-8'))
                 try:
                     conn = BLEConnection(topic[1])
-                    conn.process_commands(data['commands'])
+                    conn.process_commands(data['commands'], data.get('args', {}))
                 except Exception as e:
                     logging.error('Error: {}'.format(str(e)))
                     if 'tries' in data:
