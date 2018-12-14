@@ -130,26 +130,26 @@ class BLEConnection():
                         uuid = None
                         if 'uuid' in command:
                             uuid = command['uuid']
-                        characteristic = None
-                        if 'characteristic' in command:
-                            characteristic = command['characteristic']
+                        name = None
+                        if 'name' in command:
+                            name = command['name']
                         
-                        if ((uuid is not None or handle is not None) and characteristic is None):
+                        if ((uuid is not None or handle is not None) and name is None):
                             return_topic = "{:02x}".format(handle) if handle is not None else uuid
                         else:
-                            return_topic = characteristic
+                            return_topic = name
 
                         if self._deviceInfo['characteristics'] is not None:
                             for dev_char in self._deviceInfo['characteristics']:
-                                if characteristic is not None and characteristic == dev_char.get('name', None):
+                                if name is not None and name == dev_char.get('name', None):
                                     handle = int(dev_char.get('handle'), 0) if dev_char.get('handle', None) is not None else None 
                                     uuid = dev_char.get('uuid', None)
                                 elif uuid is not None and uuid == dev_char.get('uuid', None):
                                     handle = int(dev_char.get('handle'), 0) if dev_char.get('handle', None) is not None else None 
-                                    characteristic = dev_char.get('name', None)
+                                    name = dev_char.get('name', None)
                                 elif handle is not None and handle == dev_char.get('uuid', None):
                                     uuid = dev_char.get('uuid', None)
-                                    characteristic = dev_char.get('name', None)
+                                    name = dev_char.get('name', None)
 
                         ignoreError = None
                         if 'ignoreError' in command:
