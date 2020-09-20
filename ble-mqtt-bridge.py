@@ -188,6 +188,7 @@ class BLEConnection():
                         except Exception as e:
                             if not ignoreError:
                                 raise e
+                        logging.info("done")
 
                 if combinedResponseTopic is not None:
                     client.publish('ble/{}/data/{}'.format(self._name, combinedResponseTopic), json.dumps(results), retain=True)
